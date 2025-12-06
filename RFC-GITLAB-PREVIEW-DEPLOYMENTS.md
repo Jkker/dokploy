@@ -491,6 +491,29 @@ async function handleMergeRequestClose(
 ```typescript
 /**
  * Check if user has sufficient permissions for preview deployments
+ * 
+ * GitLab Access Levels:
+ * - 10: Guest (read-only access)
+ * - 20: Reporter (can create issues)
+ * - 30: Developer (can push to non-protected branches)
+ * - 40: Maintainer (can manage project, merge to protected branches)
+ * - 50: Owner (full control, group-level only)
+ * 
+ * @param gitlabProvider - GitLab provider configuration
+ * @param projectId - GitLab project ID
+ * @param userId - GitLab user ID
+ * @param minimumAccessLevel - Minimum required access level (default: 30 = Developer)
+ * @returns Object with hasAccess boolean and numerical accessLevel
+ * @example
+ * // Check if user has at least Developer access
+ * const { hasAccess, accessLevel } = await checkGitlabUserPermissions(
+ *   gitlabProvider,
+ *   123, // projectId
+ *   456, // userId
+ *   30   // Developer minimum
+ * );
+ * // accessLevel might be 30 (Developer), 40 (Maintainer), or 50 (Owner)
+ * // hasAccess will be true if accessLevel >= 30
  */
 export async function checkGitlabUserPermissions(
   gitlabProvider: Gitlab,
@@ -950,11 +973,17 @@ function verifyGitlabWebhook(
     return false;
   }
   
+  // Convert to buffers
+  const receivedBuffer = Buffer.from(receivedToken, "utf8");
+  const expectedBuffer = Buffer.from(expectedToken, "utf8");
+  
+  // Ensure same length to prevent timing attacks through length differences
+  if (receivedBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+  
   // Constant-time comparison to prevent timing attacks
-  return crypto.timingSafeEqual(
-    Buffer.from(receivedToken),
-    Buffer.from(expectedToken)
-  );
+  return crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
 }
 ```
 

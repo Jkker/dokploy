@@ -165,7 +165,7 @@ export async function checkGitlabUserPermissions(
   gitlabProvider: Gitlab,
   projectId: number,
   userId: number,
-  minimumAccessLevel: number = 30
+  minimumAccessLevel: number = 30 // 10=Guest, 20=Reporter, 30=Developer, 40=Maintainer, 50=Owner
 ): Promise<{ hasAccess: boolean; accessLevel: number | null }> {
   await refreshGitlabToken(gitlabProvider.gitlabId);
   
@@ -223,9 +223,10 @@ export async function createGitlabMRComment(
   );
   
   if (!response.ok) {
+    const errorDetails = await response.text().catch(() => "No details available");
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: `Failed to create MR comment: ${response.statusText}`,
+      message: `Failed to create GitLab merge request comment on project ${projectId}, MR !${mergeRequestIid}: ${response.status} ${response.statusText}. ${errorDetails}`,
     });
   }
   
@@ -872,6 +873,14 @@ function getAccessLevelName(level: number | null): string {
   if (level < 40) return "Developer (30)";
   if (level < 50) return "Maintainer (40)";
   return "Owner (50)";
+}
+
+/**
+ * Helper function to build preview URL from domain and HTTPS setting
+ * Reduces code duplication throughout the codebase
+ */
+export function buildPreviewUrl(domain: string, useHttps: boolean): string {
+  return `${useHttps ? "https" : "http"}://${domain}`;
 }
 ```
 
