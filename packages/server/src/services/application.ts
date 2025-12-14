@@ -502,14 +502,15 @@ export const deployPreviewApplication = async ({
 				appName: previewDeployment.appName,
 				branch: previewDeployment.branch,
 			});
+			command += getBuildCommand(application);
 		} else if (isGitlab) {
 			command += await cloneGitlabRepository({
 				...application,
 				appName: previewDeployment.appName,
 				gitlabBranch: previewDeployment.branch,
 			});
+			command += getBuildCommand(application);
 		}
-		command += getBuildCommand(application);
 
 		const commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 		if (application.serverId) {

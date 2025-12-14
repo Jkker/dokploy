@@ -283,7 +283,7 @@ export const testGitlabConnection = async (
 };
 
 export const getGitlabAccessLevelName = (accessLevel: number | null) => {
-	if (accessLevel == null) return "none";
+	if (accessLevel === null || accessLevel === undefined) return "none";
 	if (accessLevel >= 50) return "owner";
 	if (accessLevel >= 40) return "maintainer";
 	if (accessLevel >= 30) return "developer";
