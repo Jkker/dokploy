@@ -25,7 +25,12 @@ import {
 } from "@dokploy/server/utils/providers/git";
 import { cloneGiteaRepository } from "@dokploy/server/utils/providers/gitea";
 import { cloneGithubRepository } from "@dokploy/server/utils/providers/github";
-import { cloneGitlabRepository } from "@dokploy/server/utils/providers/gitlab";
+import {
+	cloneGitlabRepository,
+	createMergeRequestNote,
+	mergeRequestNoteExists,
+	updateMergeRequestNote,
+} from "@dokploy/server/utils/providers/gitlab";
 import { createTraefikConfig } from "@dokploy/server/utils/traefik/application";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
@@ -381,6 +386,9 @@ export const deployPreviewApplication = async ({
 	});
 
 	const previewDomain = getDomainHost(previewDeployment?.domain as Domain);
+	const isGithub = application.sourceType === "github";
+	const isGitlab = application.sourceType === "gitlab";
+
 	const issueParams = {
 		owner: application?.owner || "",
 		repository: application?.repository || "",
@@ -388,78 +396,168 @@ export const deployPreviewApplication = async ({
 		comment_id: Number.parseInt(previewDeployment.pullRequestCommentId),
 		githubId: application?.githubId || "",
 	};
+	const gitlabParams = {
+		gitlabId: application.gitlabId,
+		projectId: application.gitlabProjectId,
+		mergeRequestIid: previewDeployment.pullRequestNumber,
+		noteId: Number.parseInt(previewDeployment.pullRequestCommentId),
+	};
 	try {
-		const commentExists = await issueCommentExists({
-			...issueParams,
-		});
-		if (!commentExists) {
-			const result = await createPreviewDeploymentComment({
+		if (isGithub) {
+			const commentExists = await issueCommentExists({
 				...issueParams,
-				previewDomain,
-				appName: previewDeployment.appName,
-				githubId: application?.githubId || "",
-				previewDeploymentId,
 			});
+			if (!commentExists) {
+				const result = await createPreviewDeploymentComment({
+					...issueParams,
+					previewDomain,
+					appName: previewDeployment.appName,
+					githubId: application?.githubId || "",
+					previewDeploymentId,
+				});
 
-			if (!result) {
+				if (!result) {
+					throw new TRPCError({
+						code: "NOT_FOUND",
+						message: "Pull request comment not found",
+					});
+				}
+
+				issueParams.comment_id = Number.parseInt(result?.pullRequestCommentId);
+			}
+			const buildingComment = getIssueComment(
+				application.name,
+				"running",
+				previewDomain,
+			);
+			await updateIssueComment({
+				...issueParams,
+				body: `### Dokploy Preview Deployment\n\n${buildingComment}`,
+			});
+		} else if (isGitlab) {
+			if (!gitlabParams.gitlabId || !gitlabParams.projectId) {
 				throw new TRPCError({
-					code: "NOT_FOUND",
-					message: "Pull request comment not found",
+					code: "BAD_REQUEST",
+					message: "GitLab provider not configured for preview deployment",
 				});
 			}
 
-			issueParams.comment_id = Number.parseInt(result?.pullRequestCommentId);
+			let currentNoteId = gitlabParams.noteId;
+			const noteExists =
+				currentNoteId &&
+				(await mergeRequestNoteExists({
+					gitlabId: gitlabParams.gitlabId,
+					projectId: gitlabParams.projectId,
+					mergeRequestIid: gitlabParams.mergeRequestIid,
+					noteId: gitlabParams.noteId,
+				}));
+
+			if (!noteExists) {
+				const result = await createMergeRequestNote({
+					gitlabId: gitlabParams.gitlabId,
+					projectId: gitlabParams.projectId,
+					mergeRequestIid: gitlabParams.mergeRequestIid,
+					body: `### Dokploy Preview Deployment\n\n${getIssueComment(
+						application.name,
+						"initializing",
+						previewDomain,
+					)}`,
+				});
+				currentNoteId = result.id;
+				await updatePreviewDeployment(previewDeploymentId, {
+					pullRequestCommentId: `${result.id}`,
+				});
+			}
+
+			gitlabParams.noteId = Number.parseInt(`${currentNoteId}`);
+
+			const buildingComment = getIssueComment(
+				application.name,
+				"running",
+				previewDomain,
+			);
+
+			await updateMergeRequestNote({
+				gitlabId: gitlabParams.gitlabId,
+				projectId: gitlabParams.projectId,
+				mergeRequestIid: gitlabParams.mergeRequestIid,
+				noteId: gitlabParams.noteId,
+				body: `### Dokploy Preview Deployment\n\n${buildingComment}`,
+			});
+		} else {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: "Preview deployments are only supported for GitHub and GitLab",
+			});
 		}
-		const buildingComment = getIssueComment(
-			application.name,
-			"running",
-			previewDomain,
-		);
-		await updateIssueComment({
-			...issueParams,
-			body: `### Dokploy Preview Deployment\n\n${buildingComment}`,
-		});
 		application.appName = previewDeployment.appName;
 		application.env = `${application.previewEnv}\nDOKPLOY_DEPLOY_URL=${previewDeployment?.domain?.host}`;
 		application.buildArgs = `${application.previewBuildArgs}\nDOKPLOY_DEPLOY_URL=${previewDeployment?.domain?.host}`;
 		application.buildSecrets = `${application.previewBuildSecrets}\nDOKPLOY_DEPLOY_URL=${previewDeployment?.domain?.host}`;
 
 		let command = "set -e;";
-		if (application.sourceType === "github") {
+		if (isGithub) {
 			command += await cloneGithubRepository({
 				...application,
 				appName: previewDeployment.appName,
 				branch: previewDeployment.branch,
 			});
-			command += getBuildCommand(application);
-
-			const commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
-			if (application.serverId) {
-				await execAsyncRemote(application.serverId, commandWithLog);
-			} else {
-				await execAsync(commandWithLog);
-			}
-			await mechanizeDockerContainer(application);
+		} else if (isGitlab) {
+			command += await cloneGitlabRepository({
+				...application,
+				appName: previewDeployment.appName,
+				gitlabBranch: previewDeployment.branch,
+			});
 		}
+		command += getBuildCommand(application);
+
+		const commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
+		if (application.serverId) {
+			await execAsyncRemote(application.serverId, commandWithLog);
+		} else {
+			await execAsync(commandWithLog);
+		}
+		await mechanizeDockerContainer(application);
+
 		const successComment = getIssueComment(
 			application.name,
 			"success",
 			previewDomain,
 		);
-		await updateIssueComment({
-			...issueParams,
-			body: `### Dokploy Preview Deployment\n\n${successComment}`,
-		});
+		if (isGithub) {
+			await updateIssueComment({
+				...issueParams,
+				body: `### Dokploy Preview Deployment\n\n${successComment}`,
+			});
+		} else if (isGitlab) {
+			await updateMergeRequestNote({
+				gitlabId: gitlabParams.gitlabId || "",
+				projectId: gitlabParams.projectId || 0,
+				mergeRequestIid: gitlabParams.mergeRequestIid,
+				noteId: gitlabParams.noteId,
+				body: `### Dokploy Preview Deployment\n\n${successComment}`,
+			});
+		}
 		await updateDeploymentStatus(deployment.deploymentId, "done");
 		await updatePreviewDeployment(previewDeploymentId, {
 			previewStatus: "done",
 		});
 	} catch (error) {
 		const comment = getIssueComment(application.name, "error", previewDomain);
-		await updateIssueComment({
-			...issueParams,
-			body: `### Dokploy Preview Deployment\n\n${comment}`,
-		});
+		if (isGithub) {
+			await updateIssueComment({
+				...issueParams,
+				body: `### Dokploy Preview Deployment\n\n${comment}`,
+			});
+		} else if (isGitlab) {
+			await updateMergeRequestNote({
+				gitlabId: gitlabParams.gitlabId || "",
+				projectId: gitlabParams.projectId || 0,
+				mergeRequestIid: gitlabParams.mergeRequestIid,
+				noteId: gitlabParams.noteId,
+				body: `### Dokploy Preview Deployment\n\n${comment}`,
+			});
+		}
 		await updateDeploymentStatus(deployment.deploymentId, "error");
 		await updatePreviewDeployment(previewDeploymentId, {
 			previewStatus: "error",

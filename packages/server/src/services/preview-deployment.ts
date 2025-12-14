@@ -11,6 +11,7 @@ import { generatePassword } from "../templates";
 import { removeService } from "../utils/docker/utils";
 import { removeDirectoryCode } from "../utils/filesystem/directory";
 import { authGithub } from "../utils/providers/github";
+import { createMergeRequestNote } from "../utils/providers/gitlab";
 import { removeTraefikConfig } from "../utils/traefik/application";
 import { manageDomain } from "../utils/traefik/domain";
 import { findUserById } from "./admin";
@@ -145,27 +146,51 @@ export const createPreviewDeployment = async (
 		org?.ownerId || "",
 	);
 
-	const octokit = authGithub(application?.github as Github);
-
 	const runningComment = getIssueComment(
 		application.name,
 		"initializing",
 		`${application.previewHttps ? "https" : "http"}://${generateDomain}`,
 	);
 
-	const issue = await octokit.rest.issues.createComment({
-		owner: application?.owner || "",
-		repo: application?.repository || "",
-		issue_number: Number.parseInt(schema.pullRequestNumber),
-		body: `### Dokploy Preview Deployment\n\n${runningComment}`,
-	});
+	let pullRequestCommentId = "";
+
+	if (application.sourceType === "github") {
+		const octokit = authGithub(application?.github as Github);
+		const issue = await octokit.rest.issues.createComment({
+			owner: application?.owner || "",
+			repo: application?.repository || "",
+			issue_number: Number.parseInt(schema.pullRequestNumber),
+			body: `### Dokploy Preview Deployment\n\n${runningComment}`,
+		});
+		pullRequestCommentId = `${issue.data.id}`;
+	} else if (application.sourceType === "gitlab") {
+		if (!application.gitlabId || !application.gitlabProjectId) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: "GitLab provider is not configured for this application",
+			});
+		}
+
+		const note = await createMergeRequestNote({
+			gitlabId: application.gitlabId,
+			projectId: application.gitlabProjectId,
+			mergeRequestIid: schema.pullRequestNumber,
+			body: `### Dokploy Preview Deployment\n\n${runningComment}`,
+		});
+		pullRequestCommentId = `${note.id}`;
+	} else {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "Preview deployments are only supported for GitHub and GitLab",
+		});
+	}
 
 	const previewDeployment = await db
 		.insert(previewDeployments)
 		.values({
 			...schema,
 			appName: appName,
-			pullRequestCommentId: `${issue.data.id}`,
+			pullRequestCommentId,
 		})
 		.returning()
 		.then((value) => value[0]);
