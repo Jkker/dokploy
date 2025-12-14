@@ -282,6 +282,239 @@ export const testGitlabConnection = async (
 	return filteredRepos.length;
 };
 
+export const getGitlabAccessLevelName = (accessLevel: number | null) => {
+	if (accessLevel === null || accessLevel === undefined) return "none";
+	if (accessLevel >= 50) return "owner";
+	if (accessLevel >= 40) return "maintainer";
+	if (accessLevel >= 30) return "developer";
+	if (accessLevel >= 20) return "reporter";
+	if (accessLevel >= 10) return "guest";
+	return "none";
+};
+
+export const hasDeveloperOrHigherAccess = (accessLevel: number | null) => {
+	return (accessLevel ?? 0) >= 30;
+};
+
+export const checkGitlabUserRepositoryPermissions = async (
+	gitlabProvider: Gitlab,
+	projectId: number | null,
+	userId: number | null,
+) => {
+	if (!projectId || !userId) {
+		return {
+			hasWriteAccess: false,
+			permission: null,
+		};
+	}
+	try {
+		await refreshGitlabToken(gitlabProvider.gitlabId);
+		const provider = await findGitlabById(gitlabProvider.gitlabId);
+
+		const response = await fetch(
+			`${provider.gitlabUrl}/api/v4/projects/${projectId}/members/all/${userId}`,
+			{
+				headers: {
+					Authorization: `Bearer ${provider.accessToken}`,
+				},
+			},
+		);
+
+		if (!response.ok) {
+			return {
+				hasWriteAccess: false,
+				permission: null,
+			};
+		}
+
+		const membership = await response.json();
+		const accessLevel = membership.access_level as number | null;
+
+		return {
+			hasWriteAccess: hasDeveloperOrHigherAccess(accessLevel),
+			permission: getGitlabAccessLevelName(accessLevel),
+		};
+	} catch (error) {
+		console.warn(
+			`Failed to validate GitLab permissions for user ${userId} in project ${projectId}`,
+			error,
+		);
+		return {
+			hasWriteAccess: false,
+			permission: null,
+		};
+	}
+};
+
+const gitlabNoteHeaders = (provider: Gitlab) => ({
+	Authorization: `Bearer ${provider.accessToken}`,
+	"Content-Type": "application/json",
+});
+
+type GitlabNote = {
+	id?: number;
+	body?: string;
+};
+
+export const createMergeRequestNote = async (params: {
+	gitlabId: string;
+	projectId: number;
+	mergeRequestIid: string | number;
+	body: string;
+}) => {
+	const { gitlabId, projectId, mergeRequestIid, body } = params;
+	await refreshGitlabToken(gitlabId);
+	const provider = await findGitlabById(gitlabId);
+	const response = await fetch(
+		`${provider.gitlabUrl}/api/v4/projects/${projectId}/merge_requests/${mergeRequestIid}/notes`,
+		{
+			method: "POST",
+			headers: gitlabNoteHeaders(provider),
+			body: JSON.stringify({ body }),
+		},
+	);
+
+	if (!response.ok) {
+		throw new Error(`Failed to create GitLab MR note: ${response.statusText}`);
+	}
+
+	return response.json();
+};
+
+export const updateMergeRequestNote = async (params: {
+	gitlabId: string;
+	projectId: number;
+	mergeRequestIid: string | number;
+	noteId: number | string;
+	body: string;
+}) => {
+	const { gitlabId, projectId, mergeRequestIid, body, noteId } = params;
+	await refreshGitlabToken(gitlabId);
+	const provider = await findGitlabById(gitlabId);
+	const response = await fetch(
+		`${provider.gitlabUrl}/api/v4/projects/${projectId}/merge_requests/${mergeRequestIid}/notes/${noteId}`,
+		{
+			method: "PUT",
+			headers: gitlabNoteHeaders(provider),
+			body: JSON.stringify({ body }),
+		},
+	);
+
+	if (!response.ok) {
+		throw new Error(`Failed to update GitLab MR note: ${response.statusText}`);
+	}
+
+	return response.json();
+};
+
+export const mergeRequestNoteExists = async (params: {
+	gitlabId: string;
+	projectId: number;
+	mergeRequestIid: string | number;
+	noteId: number | string;
+}) => {
+	const { gitlabId, projectId, mergeRequestIid, noteId } = params;
+	await refreshGitlabToken(gitlabId);
+	const provider = await findGitlabById(gitlabId);
+	const response = await fetch(
+		`${provider.gitlabUrl}/api/v4/projects/${projectId}/merge_requests/${mergeRequestIid}/notes/${noteId}`,
+		{
+			headers: {
+				Authorization: `Bearer ${provider.accessToken}`,
+			},
+		},
+	);
+
+	return response.ok;
+};
+
+const GITLAB_SECURITY_MARKER =
+	"🚨 Preview Deployment Blocked - Security Protection";
+
+const getGitlabSecurityBlockedMessage = (
+	mrAuthor: string,
+	repositoryName: string,
+	permission: string | null,
+) => {
+	return `### 🚨 Preview Deployment Blocked - Security Protection
+
+**Your merge request was blocked from triggering preview deployments**
+
+#### Why was this blocked?
+- **User**: \`${mrAuthor}\`
+- **Repository**: \`${repositoryName}\`
+- **Permission Level**: \`${permission || "none"}\`
+- **Required Level**: \`developer\`, \`maintainer\`, or \`owner\`
+
+#### How to resolve this:
+
+**Option 1: Get Project Access (Recommended)**
+Ask a project maintainer to grant you at least **Developer** access.
+
+**Option 2: Request Permission Override**
+Ask a project administrator to disable the security check for this application if appropriate.
+
+#### For Project Administrators:
+To disable this security check (⚠️ **not recommended for public repositories**):
+Enter the preview settings and disable the security check.
+
+---
+*This security measure protects against malicious code execution in preview deployments. Only trusted collaborators should trigger them.*
+`;
+};
+
+export const createGitlabSecurityBlockedNote = async (params: {
+	gitlabId: string;
+	projectId: number;
+	mergeRequestIid: number | string;
+	mrAuthor: string;
+	repositoryName: string;
+	permission: string | null;
+}) => {
+	const { gitlabId, projectId, mergeRequestIid, mrAuthor, repositoryName } =
+		params;
+	await refreshGitlabToken(gitlabId);
+	const provider = await findGitlabById(gitlabId);
+
+	try {
+		const existingNotesResponse = await fetch(
+			`${provider.gitlabUrl}/api/v4/projects/${projectId}/merge_requests/${mergeRequestIid}/notes`,
+			{
+				headers: {
+					Authorization: `Bearer ${provider.accessToken}`,
+				},
+			},
+		);
+
+		if (existingNotesResponse.ok) {
+			const notes = (await existingNotesResponse.json()) as GitlabNote[];
+			if (
+				notes.some((note) => note.body?.includes(GITLAB_SECURITY_MARKER))
+			) {
+				return null;
+			}
+		}
+	} catch (error) {
+		console.warn(
+			"Failed to check existing GitLab security notes, proceeding to create one",
+			error,
+		);
+	}
+
+	const body = getGitlabSecurityBlockedMessage(
+		mrAuthor,
+		repositoryName,
+		params.permission,
+	);
+
+	return await createMergeRequestNote({
+		gitlabId,
+		projectId,
+		mergeRequestIid,
+		body,
+	});
+};
+
 export const validateGitlabProvider = async (gitlabProvider: Gitlab) => {
 	try {
 		const allProjects = [];
