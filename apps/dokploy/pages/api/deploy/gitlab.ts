@@ -136,19 +136,22 @@ export default async function handler(
 	let userPermission: string | null = null;
 
 	for (const app of filteredApps) {
-		if (app.previewRequireCollaboratorPermissions !== false) {
-			const { hasWriteAccess, permission } =
-				await checkGitlabUserRepositoryPermissions(
-					app.gitlab,
-					projectId,
-					mrAuthorId,
-				);
+		if (app.previewRequireCollaboratorPermissions === false) {
+			secureApps.push(app);
+			continue;
+		}
 
-			userPermission = permission;
-			if (!hasWriteAccess) {
-				blockedApps.push(app.name);
-				continue;
-			}
+		const { hasWriteAccess, permission } =
+			await checkGitlabUserRepositoryPermissions(
+				app.gitlab,
+				projectId,
+				mrAuthorId,
+			);
+
+		userPermission = permission;
+		if (!hasWriteAccess) {
+			blockedApps.push(app.name);
+			continue;
 		}
 		secureApps.push(app);
 	}
@@ -178,7 +181,7 @@ export default async function handler(
 		}
 
 		const previewLimit = app?.previewLimit || 0;
-		if (app?.previewDeployments?.length > previewLimit) {
+		if (app?.previewDeployments?.length >= previewLimit && previewLimit > 0) {
 			continue;
 		}
 

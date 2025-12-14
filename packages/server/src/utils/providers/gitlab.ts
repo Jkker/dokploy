@@ -283,7 +283,7 @@ export const testGitlabConnection = async (
 };
 
 export const getGitlabAccessLevelName = (accessLevel: number | null) => {
-	if (accessLevel === null || accessLevel === undefined) return "none";
+	if (accessLevel == null) return "none";
 	if (accessLevel >= 50) return "owner";
 	if (accessLevel >= 40) return "maintainer";
 	if (accessLevel >= 30) return "developer";
@@ -350,6 +350,11 @@ const gitlabNoteHeaders = (provider: Gitlab) => ({
 	Authorization: `Bearer ${provider.accessToken}`,
 	"Content-Type": "application/json",
 });
+
+type GitlabNote = {
+	id?: number;
+	body?: string;
+};
 
 export const createMergeRequestNote = async (params: {
 	gitlabId: string;
@@ -482,7 +487,7 @@ export const createGitlabSecurityBlockedNote = async (params: {
 		);
 
 		if (existingNotesResponse.ok) {
-			const notes = (await existingNotesResponse.json()) as { body?: string }[];
+			const notes = (await existingNotesResponse.json()) as GitlabNote[];
 			if (
 				notes.some((note) => note.body?.includes(GITLAB_SECURITY_MARKER))
 			) {

@@ -529,10 +529,15 @@ export const deployPreviewApplication = async ({
 				...issueParams,
 				body: `### Dokploy Preview Deployment\n\n${successComment}`,
 			});
-		} else if (isGitlab) {
+		} else if (
+			isGitlab &&
+			gitlabParams.gitlabId &&
+			gitlabParams.projectId &&
+			gitlabParams.noteId
+		) {
 			await updateMergeRequestNote({
-				gitlabId: gitlabParams.gitlabId || "",
-				projectId: gitlabParams.projectId || 0,
+				gitlabId: gitlabParams.gitlabId,
+				projectId: gitlabParams.projectId,
 				mergeRequestIid: gitlabParams.mergeRequestIid,
 				noteId: gitlabParams.noteId,
 				body: `### Dokploy Preview Deployment\n\n${successComment}`,
@@ -549,10 +554,15 @@ export const deployPreviewApplication = async ({
 				...issueParams,
 				body: `### Dokploy Preview Deployment\n\n${comment}`,
 			});
-		} else if (isGitlab) {
+		} else if (
+			isGitlab &&
+			gitlabParams.gitlabId &&
+			gitlabParams.projectId &&
+			gitlabParams.noteId
+		) {
 			await updateMergeRequestNote({
-				gitlabId: gitlabParams.gitlabId || "",
-				projectId: gitlabParams.projectId || 0,
+				gitlabId: gitlabParams.gitlabId,
+				projectId: gitlabParams.projectId,
 				mergeRequestIid: gitlabParams.mergeRequestIid,
 				noteId: gitlabParams.noteId,
 				body: `### Dokploy Preview Deployment\n\n${comment}`,
